@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor Dashboard</title>
+<style>
+  :root { --bg:#111418; --panel:#1b2027; --line:#2c333d; --text:#e6e9ee; --dim:#8b95a3;
+          --ok:#3ecf74; --warn:#f2b33d; --bad:#ef4b4b; --accent:#4c9dff; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+         font:14px/1.4 system-ui, sans-serif; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+  .pill { padding:4px 10px; border-radius:99px; background:var(--panel); border:1px solid var(--line);
+          font-variant-numeric:tabular-nums; }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.bad { color:var(--bad); border-color:var(--bad); }
+  .pill.warn { color:var(--warn); border-color:var(--warn); }
+  .grid { display:grid; grid-template-columns: minmax(260px, 340px) 1fr; gap:12px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 10px; }
+  button { font:inherit; color:var(--text); background:#2a313b; border:1px solid var(--line);
+           border-radius:8px; padding:8px 12px; cursor:pointer; }
+  button:hover { filter:brightness(1.2); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  #stop { width:100%; padding:18px; font-size:22px; font-weight:700; background:var(--bad);
+          border-color:#ff7a7a; color:#fff; margin-bottom:10px; }
+  #enable { background:#1f4d33; border-color:var(--ok); }
+  #enable.on { background:var(--ok); color:#06210f; font-weight:700; }
+  label.chk { display:flex; gap:8px; align-items:center; margin:8px 0; }
+  .row { display:grid; grid-template-columns: 48px 1fr 92px; gap:10px; align-items:center; margin:10px 0; }
+  .row .val { text-align:right; font-variant-numeric:tabular-nums; }
+  .row .val small { color:var(--dim); display:block; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  input[type=range]:disabled { opacity:.35; }
+  .tests { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  svg { width:100%; max-width:320px; display:block; margin:0 auto; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  td { padding:3px 4px; border-bottom:1px solid var(--line); }
+  td:last-child { text-align:right; }
+  .outtable td { text-align:right; } .outtable td:first-child { text-align:left; }
+  .outtable th { color:var(--dim); font-weight:500; text-align:right; padding:3px 4px; } .outtable th:first-child { text-align:left; }
+  .log { font:12px ui-monospace, monospace; color:var(--dim); max-height:180px; overflow:auto; white-space:pre-wrap; }
+  .hint { color:var(--dim); font-size:12px; }
+  .err { color:var(--bad); min-height:1.2em; }
+  .tab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+</style>
+</head>
+<body>
+<h1>Ball Drone — props-off motor dashboard</h1>
+<div class="bar" id="tabs">
+  <button data-tab="motors" class="tab on">Motors</button>
+  <button data-tab="camera" class="tab">Camera</button>
+  <button data-tab="preflight" class="tab">Preflight</button>
+</div>
+<div id="tab-preflight" hidden>
+  <div class="panel" style="max-width:900px">
+    <div class="bar"><button id="pfrun" style="padding:10px 18px">Run preflight checks</button>
+      <span id="pfsum" class="pill">not run</span><span id="pftime" class="hint"></span></div>
+    <table id="pftable"></table>
+    <h2 style="margin-top:16px">Manual checks (software can't see these)</h2>
+    <div id="pfmanual"></div>
+    <p class="hint">Read-only: nothing is changed on the FC or Pi. GO needs every automatic line green and every
+      manual box ticked. First hover: pilot only, USB unplugged, ESP32 trainer off (SD up).</p>
+  </div>
+</div>
+<div id="tab-camera" hidden>
+  <div class="panel">
+    <div class="bar" style="margin-bottom:8px">
+      <span id="vtxstate" class="pill">VTX —</span>
+      <button id="vtxtoggle">—</button>
+      <span id="fpvsig" class="pill">—</span>
+      <span id="fpvinfo" class="hint"></span>
+      <button id="fpvreset">Reset capture stick</button>
+      <a id="fpvsnap" target="_blank" style="color:var(--accent)">Open snapshot</a>
+    </div>
+    <div style="background:#000;border-radius:8px;overflow:hidden;max-width:960px">
+      <img id="fpvimg" alt="FPV feed" style="width:100%;display:block;aspect-ratio:3/2">
+    </div>
+    <p class="hint">Drone camera → FC video transmitter (5917 MHz, 25 mW) → RC832 (set to 5-8) → USB capture
+      stick → Pi → here. SNOW = RC832 hears nothing on its channel (drone battery out, wrong channel).
+      FLAT = blank screen. NO INPUT = capture stick stuck (auto-resets, or press Reset).
+      Motor safety (Space = STOP) still works on this tab.<br>
+      <b>Video OFF</b> puts the drone's video transmitter in pit mode (near-zero output) to save battery and heat;
+      the camera itself stays powered (it's hard-wired). Not saved: unplugging the battery turns video back ON.
+      Needs the FC on USB. Turning video off is refused while armed.</p>
+  </div>
+</div>
+<div id="tab-motors">
+<div class="bar">
+  <span id="conn" class="pill">…</span>
+  <span id="volt" class="pill">— V</span>
+  <span id="armed" class="pill">—</span>
+  <span id="fw" class="pill">—</span>
+  <span id="proto" class="pill">—</span>
+  <button id="reconnect">⟳ Reconnect FC</button>
+</div>
+<div id="connerr" class="err"></div>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <button id="stop">STOP ALL (Space)</button>
+      <button id="enable" style="width:100%;padding:12px">Props removed — ENABLE motors</button>
+      <div id="err" class="err"></div>
+      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+        <div><b>Radio (Pocket) arming</b></div>
+        <div id="armblock" class="hint" style="margin:6px 0"></div>
+        <button id="radioarm" style="width:100%">Allow radio arming</button>
+        <p class="hint">The dashboard blocks arming while it controls motors. Allow it to arm with SA
+          and fly the motors from the Pocket sticks (props off!). Reconnecting re-blocks.</p>
+      </div>
+      <p class="hint">Closing/hiding this tab, losing the server, unplugging USB or arming the FC
+        stops everything and disables control. If a motor ever keeps spinning, unplug the battery.</p>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Quad X — top view, nose up</h2>
+      <svg viewBox="0 0 200 200" id="quad">
+        <line x1="50" y1="50" x2="150" y2="150" stroke="#3a424d" stroke-width="6"/>
+        <line x1="150" y1="50" x2="50" y2="150" stroke="#3a424d" stroke-width="6"/>
+        <rect x="80" y="80" width="40" height="40" rx="6" fill="#2a313b"/>
+        <polygon points="100,62 92,76 108,76" fill="#4c9dff"/>
+        <text x="100" y="14" fill="#8b95a3" font-size="10" text-anchor="middle">FRONT</text>
+      </svg>
+      <p class="hint">Betaflight default (props in): M1 & M4 clockwise, M2 & M3 counter-clockwise.
+        Arrows show expected direction — compare with what you see.</p>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Motors <span id="maxinfo" class="hint"></span></h2>
+      <div id="locked" class="pill warn" style="display:block;border-radius:8px;margin-bottom:6px">
+        🔒 Sliders locked — click the green “Props removed — ENABLE motors” button (left).</div>
+      <div class="row"><b>ALL</b><input type="range" id="master" min="1000" max="1300" value="1000" disabled>
+        <span class="val" id="masterv">1000</span></div>
+      <div id="rows"></div>
+      <div class="tests" id="tests"></div>
+      <p class="hint">1000 = stop. 1100 ≈ 10 % throttle = this FC's armed idle. Values below ~1060
+        can stutter (ESC loses sync) — that's normal, not a fault. Arrow keys nudge the master slider.</p>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Motor outputs (live, last 30 s)</h2>
+      <table id="outtable" class="outtable"></table>
+      <canvas id="outchart" width="900" height="180" style="width:100%;height:180px;background:#14181d;border-radius:8px;margin-top:8px"></canvas>
+      <p class="hint" id="outnote">What Betaflight is commanding each ESC (from the sliders, or the mixer when armed with the Pocket),
+        as % throttle. Real RPM needs bidirectional DShot (off on this FC), so it shows here only if that is enabled.</p>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Motor direction (stored in each ESC)</h2>
+      <div id="dirs"></div>
+      <p class="hint">Look from <b>above</b>. Betaflight default (props in): <b>M1 & M4 clockwise, M2 & M3
+        counter-clockwise</b>. If a motor turns the wrong way, press the <i>other</i> button for it
+        (try “Reversed”; if it was already reversed, “Normal” flips it back), then spin-test it again.
+        Motors stop and controls disable while it saves. If nothing changes, unplug/replug the battery and re-test.</p>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr; margin-top:12px">
+      <div class="panel"><h2>Receiver (RC)</h2><table id="rc"></table></div>
+      <div class="panel"><h2>Log</h2><div class="log" id="log"></div></div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const POS = { 1:[150,150,'cw'], 2:[150,50,'ccw'], 3:[50,150,'ccw'], 4:[50,50,'cw'] };
+const RC_NAMES = ['Roll','Pitch','Yaw','Throttle','AUX1 (ARM)','AUX2','AUX3','AUX4'];
+let state = {}, sliders = [], busy = false, lastOk = 0, testTimers = {};
+
+// Build motor rows, quad markers, test buttons
+for (let m = 1; m <= 4; m++) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<b>M${m}</b><input type="range" min="1000" max="1300" value="1000" disabled>
+    <span class="val"><span>1000</span><small>0 %</small></span>`;
+  $('rows').appendChild(row);
+  const s = row.querySelector('input'); sliders.push(s);
+  s.addEventListener('input', () => { clearTimeout(testTimers[m]); render(); });
+
+  const [x, y, dir] = POS[m];
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  const sweep = dir === 'cw' ? 1 : 0;
+  const ax = dir === 'cw' ? x + 22 : x - 22;
+  g.innerHTML = `<circle cx="${x}" cy="${y}" r="30" fill="none" stroke="#2c333d" stroke-width="2"/>
+    <path d="M ${x} ${y-24} A 24 24 0 0 ${sweep} ${ax} ${y-8}" fill="none" stroke="#8b95a3" stroke-width="2"/>
+    <circle id="dot${m}" cx="${x}" cy="${y}" r="16" fill="#2a313b" stroke="#4c9dff" stroke-width="2"/>
+    <text x="${x}" y="${y+4}" fill="#e6e9ee" font-size="12" text-anchor="middle" font-weight="700">M${m}</text>
+    <text id="q${m}" x="${x}" y="${y+46}" fill="#8b95a3" font-size="10" text-anchor="middle">${dir.toUpperCase()}</text>`;
+  $('quad').appendChild(g);
+
+  const b = document.createElement('button');
+  b.textContent = `Test M${m}: 1100 × 2 s`;
+  b.onclick = () => {
+    if (!state.enabled) return;
+    sliders.forEach(x => x.value = 1000);
+    sliders[m-1].value = 1100; render();
+    clearTimeout(testTimers[m]);
+    testTimers[m] = setTimeout(() => { sliders[m-1].value = 1000; render(); }, 2000);
+  };
+  $('tests').appendChild(b);
+}
+
+for (let m = 1; m <= 4; m++) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.style.gridTemplateColumns = '48px 1fr 1fr 1fr';
+  row.innerHTML = `<b>M${m}</b><span class="hint">should be ${POS[m][2] === 'cw' ? 'clockwise' : 'counter-CW'}</span>
+    <button data-r="0">Normal</button><button data-r="1">Reversed</button>`;
+  row.querySelectorAll('button').forEach(b => b.onclick = async () => {
+    sliders.forEach(x => x.value = 1000); render();
+    try { apply(await post('/api/direction', { motor: m, reverse: b.dataset.r === '1' })); } catch (e) {}
+  });
+  $('dirs').appendChild(row);
+}
+
+$('master').addEventListener('input', e => {
+  sliders.forEach(s => s.value = e.target.value); render();
+});
+
+// --- Camera tab ---
+let tab = 'motors', fpvTimer = null, camSource = 'fpv';
+// Pi tracking app (drone-mode track/assist) owns the camera instead of the FPV streamer; same host, port 8080.
+const trackUrl = () => (state.fpv_url || '').replace(/:\d+$/, ':8080');
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(name) {
+  tab = name; history.replaceState(null, '', '#' + name);
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $('tab-motors').hidden = name !== 'motors';
+  $('tab-camera').hidden = name !== 'camera';
+  $('tab-preflight').hidden = name !== 'preflight';
+  const base = state.fpv_url || '';
+  if (name === 'camera' && base) {
+    $('fpvimg').removeAttribute('src');
+    clearInterval(fpvTimer); fpvTimer = setInterval(fpvStatus, 700); fpvStatus();
+  } else {
+    $('fpvimg').removeAttribute('src');   // stop streaming when hidden
+    clearInterval(fpvTimer);
+  }
+}
+function useCamSource(kind) {
+  if (kind === camSource && $('fpvimg').getAttribute('src')) return;
+  camSource = kind;
+  $('fpvimg').src = (kind === 'track' ? trackUrl() + '/api/preview' : state.fpv_url + '/stream.mjpg') + '?t=' + Date.now();
+  $('fpvsnap').href = kind === 'track' ? trackUrl() + '/api/preview.jpg' : state.fpv_url + '/snapshot.jpg';
+}
+async function trackStatus() {
+  const s = await (await fetch(trackUrl() + '/api/state', { cache: 'no-store' })).json();
+  if (s.source.kind !== 'camera') throw new Error('tracking app not on the camera');
+  useCamSource('track');
+  const g = s.guidance;
+  $('fpvsig').textContent = `TRACK MODE · ${s.settings.target_mode} · ${s.state}`;
+  $('fpvsig').className = 'pill ' + (s.fault ? 'bad' : 'ok');
+  $('fpvinfo').textContent = s.fault ? `fault: ${s.fault}` :
+    g ? `${g.stage}: ${g.cue}` : `yaw ${s.yaw} · ${s.bridge}`;
+}
+async function fpvStatus() {
+  const base = state.fpv_url;
+  try {
+    const s = await (await fetch(base + '/status', { cache: 'no-store' })).json();
+    const cls = { PICTURE: 'ok', SNOW: 'warn', FLAT: 'warn', RESETTING: 'warn' }[s.signal] || 'bad';
+    $('fpvsig').textContent = s.signal; $('fpvsig').className = 'pill ' + cls;
+    $('fpvinfo').textContent = s.fps != null
+      ? `${s.size ? s.size.join('×') : ''} · ${s.fps} fps · brightness ${s.mean} · detail ${s.std} · motion ${s.change}`
+      : (s.note || '');
+    useCamSource('fpv');
+  } catch (e) {
+    try { await trackStatus(); return; } catch (e2) {}
+    $('fpvsig').textContent = 'Pi video unreachable'; $('fpvsig').className = 'pill bad';
+    $('fpvinfo').textContent = `${base} (fpv) / ${trackUrl()} (track) - is the Pi on? drone-mode status`;
+  }
+}
+$('vtxtoggle').onclick = async () => {
+  const on = !!(state.vtx && state.vtx.pit);   // currently off -> turn on
+  try { apply(await post('/api/vtx', { on })); } catch (e) {}
+};
+$('fpvreset').onclick = () => fetch(state.fpv_url + '/reset', { method: 'POST' }).then(fpvStatus).catch(() => {});
+$('fpvimg').onerror = () => { if (tab === 'camera') setTimeout(() => showTab('camera'), 2000); };
+
+// --- Preflight tab ---
+const ICON = { ok: '✅', warn: '⚠️', fail: '❌', manual: '👁' };
+$('pfrun').onclick = async () => {
+  $('pfrun').disabled = true; $('pfsum').textContent = 'checking…'; $('pfsum').className = 'pill';
+  try {
+    const r = await post('/api/preflight', {});
+    const manualDone = [...document.querySelectorAll('#pfmanual input')].every((c) => c.checked);
+    const sum = r.summary === 'GO' && !manualDone ? 'CHECK' : r.summary;
+    $('pfsum').textContent = sum === 'GO' ? 'GO' : sum === 'NO-GO' ? 'NO-GO' : 'CHECK warnings / manual items';
+    $('pfsum').className = 'pill ' + (sum === 'GO' ? 'ok' : sum === 'NO-GO' ? 'bad' : 'warn');
+    $('pftime').textContent = 'at ' + r.t;
+    $('pftable').innerHTML = r.checks.map((c) => `<tr><td>${ICON[c.status] || ''} ${c.name}</td><td>${c.detail}</td></tr>`).join('');
+    if (!$('pfmanual').children.length) {
+      $('pfmanual').innerHTML = r.manual.map((m, i) => `<label class="chk"><input type="checkbox" id="pfm${i}"> ${m}</label>`).join('');
+    }
+  } catch (e) { $('pfsum').textContent = 'failed: ' + e.message; $('pfsum').className = 'pill bad'; }
+  $('pfrun').disabled = false;
+};
+
+// --- Motor output outHistory (client-side, from each state poll) ---
+const MOTOR_COLORS = ['#ff6b6b', '#4c9dff', '#ffd166', '#3ecf74'];
+const HISTORY_S = 30;
+let outHistory = [];                          // [{t, m:[4], rpm:[4]|null}]
+const prevOut = [null, null, null, null];  // {value, until} = value held before the latest change
+const lastOut = [null, null, null, null];
+function recordOutputs(s) {
+  const m = s.motor_commands;
+  if (!s.connected || !Array.isArray(m)) return;
+  const now = Date.now();
+  outHistory.push({ t: now, m: m.slice(0, 4), rpm: Array.isArray(s.rpm) ? s.rpm : null });
+  while (outHistory.length && now - outHistory[0].t > HISTORY_S * 1000) outHistory.shift();
+  m.slice(0, 4).forEach((v, i) => {
+    if (lastOut[i] !== null && v !== lastOut[i]) prevOut[i] = { value: lastOut[i], at: now };
+    lastOut[i] = v;
+  });
+}
+function ago(ms) { const s = Math.round(ms / 1000); return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`; }
+function renderOutputs() {
+  const now = Date.now(), cur = outHistory.length ? outHistory[outHistory.length - 1] : null;
+  const hasRpm = !!(cur && cur.rpm);
+  const head = `<tr><th>Motor</th><th>Now</th><th>Previous</th><th>Peak 30 s</th>${hasRpm ? '<th>RPM</th>' : ''}</tr>`;
+  const rows = [0, 1, 2, 3].map((i) => {
+    const v = cur ? cur.m[i] : null;
+    const peak = outHistory.length ? Math.max(...outHistory.map((h) => h.m[i])) : null;
+    const p = prevOut[i];
+    const fmt = (x) => x == null ? '—' : x <= 1000 ? 'stopped' : `${pct(x)} % <span class="hint">(${x})</span>`;
+    return `<tr><td><b style="color:${MOTOR_COLORS[i]}">M${i + 1}</b></td><td>${fmt(v)}</td>` +
+      `<td>${p ? `${fmt(p.value)} <span class="hint">${ago(now - p.at)}</span>` : '—'}</td><td>${fmt(peak)}</td>` +
+      (hasRpm ? `<td>${cur.rpm[i] ?? '—'}</td>` : '') + '</tr>';
+  });
+  $('outtable').innerHTML = head + rows.join('');
+  const c = $('outchart'), g = c.getContext('2d'), W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const maxPct = Math.max(15, ...outHistory.flatMap((h) => h.m.map((x) => +pct(x))));
+  g.strokeStyle = '#2c333d'; g.fillStyle = '#8b95a3'; g.font = '11px system-ui';
+  for (const frac of [0, .5, 1]) {
+    const y = H - 18 - frac * (H - 30);
+    g.beginPath(); g.moveTo(34, y); g.lineTo(W, y); g.stroke();
+    g.fillText(`${Math.round(frac * maxPct)}%`, 2, y + 4);
+  }
+  g.fillText(`-${HISTORY_S}s`, 34, H - 3); g.fillText('now', W - 26, H - 3);
+  [0, 1, 2, 3].forEach((i) => {
+    g.strokeStyle = MOTOR_COLORS[i]; g.lineWidth = 2; g.beginPath();
+    outHistory.forEach((h, k) => {
+      const x = 34 + (W - 34) * (1 - (now - h.t) / (HISTORY_S * 1000));
+      const y = H - 18 - (+pct(h.m[i]) / maxPct) * (H - 30);
+      k ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    g.stroke();
+  });
+}
+
+function pct(v) { return v <= 1000 ? 0 : ((Math.min(v,2000) - 1001) / 999 * 100).toFixed(1); }
+
+async function post(path, body) {
+  const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'},
+                                body: JSON.stringify(body || {}) });
+  return r.json();
+}
+
+function stopAll(reason) {
+  sliders.forEach(s => s.value = 1000); $('master').value = 1000;
+  Object.values(testTimers).forEach(clearTimeout);
+  render();
+  post('/api/stop', { reason: reason || 'STOP pressed' }).then(apply).catch(() => {});
+}
+
+$('stop').onclick = () => stopAll();
+$('radioarm').onclick = async () => {
+  try { apply(await post('/api/radio_arming', { allow: !state.radio_arming })); } catch (e) {}
+};
+$('reconnect').onclick = async () => {
+  sliders.forEach(s => s.value = 1000); render();
+  $('conn').textContent = 'Reconnecting…'; $('conn').className = 'pill warn';
+  try { apply(await post('/api/reconnect')); } catch (e) {}
+};
+$('enable').onclick = async () => {
+  if (state.enabled) return stopAll('Disabled from dashboard');
+  const r = await post('/api/enable', { props_removed: true });
+  apply(r);
+};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'Escape') { e.preventDefault(); stopAll(); }
+  if (state.enabled && (e.code === 'ArrowUp' || e.code === 'ArrowDown') && e.target.type !== 'range') {
+    e.preventDefault();
+    const v = Math.max(1000, Math.min(+$('master').max, +$('master').value + (e.code === 'ArrowUp' ? 10 : -10)));
+    $('master').value = v; sliders.forEach(s => s.value = v); render();
+  }
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAll('Tab hidden'); });
+addEventListener('pagehide', () => navigator.sendBeacon('/api/stop', JSON.stringify({ reason: 'Page closed' })));
+
+function apply(r) {
+  if (!r) return;
+  state = r; lastOk = Date.now();
+  recordOutputs(r); if (tab === 'motors') renderOutputs();
+  if (!window.tabInit && r.fpv_url) { window.tabInit = true; if (location.hash === '#camera') showTab('camera'); }
+  $('err').textContent = r.error || '';
+  if (!r.enabled) { sliders.forEach(s => s.value = 1000); $('master').value = 1000; }
+  render();
+}
+
+function render() {
+  const en = !!state.enabled, max = state.max_value || 1300;
+  const stale = Date.now() - lastOk > 1500;
+  [...sliders, $('master')].forEach(s => { s.disabled = !en; s.max = max; });
+  $('maxinfo').textContent = `(ceiling ${max} = ${pct(max)} %)`;
+  $('enable').textContent = en ? 'ENABLED — click to disable' : 'Props removed — ENABLE motors';
+  $('enable').classList.toggle('on', en);
+  $('locked').style.display = en ? 'none' : 'block';
+  $('enable').disabled = !state.connected && !en;
+  document.querySelectorAll('#tests button').forEach(b => b.disabled = !en);
+  document.querySelectorAll('#dirs button').forEach(b => b.disabled = !state.connected);
+  $('masterv').textContent = $('master').value;
+
+  const conn = $('conn');
+  if (stale) { conn.textContent = 'Dashboard server unreachable'; conn.className = 'pill bad'; }
+  else if (state.connected) { conn.textContent = 'FC connected'; conn.className = 'pill ok'; }
+  else { conn.textContent = 'Waiting for FC USB…'; conn.className = 'pill warn'; }
+  const ab = state.arming_blocked || [];
+  const ignorable = state.radio_arming ? [] : ['MSP'];
+  $('armblock').innerHTML = !state.connected ? '' : state.armed
+    ? '<span style="color:var(--bad)"><b>ARMED</b> — SA off to disarm</span>'
+    : ab.length === 0 ? '<span style="color:var(--ok)">Ready to arm (nothing blocking)</span>'
+    : 'Arming blocked by: ' + ab.map(f => `<b style="color:${ignorable.includes(f) ? 'var(--dim)' : 'var(--warn)'}">${f}</b>`).join(', ')
+      + (ab.includes('THROTTLE') ? '<br>THROTTLE = throttle stick not below 1050 (yours reads ' + ((state.rc||[])[3] ?? '?') + ').' : '')
+      + (ab.includes('ANGLE') ? '<br>ANGLE = board tilted >25°; set it level.' : '')
+      + (ab.includes('ARMSWITCH') ? '<br>ARMSWITCH = SA was on while blocked; flip SA off then on.' : '')
+      + (ab.includes('MSP') && !state.radio_arming ? '<br>MSP = the dashboard\'s own block (button below).' : '');
+  $('radioarm').textContent = state.radio_arming ? 'Block radio arming again' : 'Allow radio arming';
+  $('radioarm').disabled = !state.connected;
+  const vt = state.vtx || {};
+  if (vt.freq != null && state.connected) {
+    $('vtxstate').textContent = vt.pit ? 'VIDEO OFF (pit mode)' : `VIDEO ON · ${vt.freq} MHz`;
+    $('vtxstate').className = 'pill ' + (vt.pit ? 'warn' : 'ok');
+    $('vtxtoggle').textContent = vt.pit ? 'Turn video ON' : 'Turn video OFF (save battery)';
+    $('vtxtoggle').disabled = false;
+  } else {
+    $('vtxstate').textContent = 'VTX ? (FC not on USB)'; $('vtxstate').className = 'pill';
+    $('vtxtoggle').textContent = 'Video on/off'; $('vtxtoggle').disabled = true;
+  }
+  const ce = state.connect_error || '';
+  $('connerr').textContent = state.connected || !ce ? '' :
+    (ce.includes('ermission')
+      ? 'USB permission denied. In a terminal run: sudo setfacl -m u:$USER:rw /dev/ttyACM0  (or log out/in once), then Reconnect.'
+      : ce.includes('No such file') ? 'FC not plugged in (no USB device found).'
+      : ce.includes('busy') || ce.includes('lock') ? 'Port busy — close the Betaflight app / other serial tools, then Reconnect.'
+      : 'Connect error: ' + ce);
+
+  const v = state.voltage;
+  $('volt').textContent = v == null ? '— V' : (v < 5 ? `${v.toFixed(2)} V (no battery)` : `${v.toFixed(2)} V`);
+  $('volt').className = 'pill ' + (v == null ? '' : v < 5 ? 'warn' : v < 6.8 ? 'bad' : 'ok');
+  $('armed').textContent = state.armed == null ? '—' : state.armed ? 'ARMED' : 'Disarmed';
+  $('armed').className = 'pill ' + (state.armed ? 'bad' : state.armed == null ? '' : 'ok');
+  $('fw').textContent = state.firmware ? 'BF ' + state.firmware.join('.') : '—';
+  const c = state.config || {};
+  $('proto').textContent = c.motor_protocol ? `${c.motor_protocol}, idle ${(c.dshot_idle_value/100).toFixed(1)} %` : '—';
+
+  const cmd = state.motor_commands || [1000,1000,1000,1000];
+  sliders.forEach((s, i) => {
+    const val = s.parentElement.querySelector('.val');
+    val.children[0].textContent = `${s.value} → ${cmd[i]}`;
+    val.children[1].textContent = `${pct(+s.value)} % set`;
+    const on = cmd[i] > 1000;
+    $('dot' + (i+1)).setAttribute('fill', on ? '#3ecf74' : '#2a313b');
+    $('q' + (i+1)).textContent = on ? `${cmd[i]} (${pct(cmd[i])} %)` : POS[i+1][2].toUpperCase();
+  });
+
+  const rc = state.rc || [];
+  $('rc').innerHTML = RC_NAMES.map((n, i) => {
+    let note = '';
+    if (i === 3 && rc[i] > 1050) note = ' ⚠ not at min';
+    if (i === 4 && rc[i] >= 1800) note = ' ⚠ ARM switch on';
+    return `<tr><td>${n}</td><td>${rc[i] ?? '—'}${note}</td></tr>`;
+  }).join('');
+  $('log').textContent = (state.events || []).map(e => `${e.t}  ${e.msg}`).reverse().join('\n');
+}
+
+async function loop() {
+  if (busy) return; busy = true;
+  try {
+    const r = state.enabled
+      ? await post('/api/set', { motors: sliders.map(s => +s.value) })
+      : await (await fetch('/api/state')).json();
+    apply(r);
+  } catch (e) { render(); }
+  busy = false;
+}
+setInterval(loop, 100);
+loop();
+</script>
+</body>
+</html>
